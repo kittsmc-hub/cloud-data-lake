@@ -1,0 +1,12 @@
+.env
+.env
+.venv/
+__pycache__/
+airflow/logs/
+dbt/log_analytics/target/
+dbt/log_analytics/dbt_packages/
+dbt/log_analytics/profiles.yml 
+*.parquet
+*.csv
+*.jsonl 
+.DS_Store
