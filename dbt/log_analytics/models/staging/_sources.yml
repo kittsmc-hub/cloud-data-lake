@@ -1,0 +1,31 @@
+version: 2
+
+sources:
+  - name: silver
+    description: >
+      Delta Lake silver layer written by spark-jobs/bronze_to_silver.py.
+      Read directly out of MinIO via DuckDB's delta_scan — no separate
+      "load" step, the warehouse queries the lake table in place.
+    meta:
+      external_location: "delta_scan('s3://silver/events')"
+    tables:
+      - name: events
+        meta:
+          external_location: "delta_scan('s3://silver/events')"
+        description: "Cleaned, deduped, deduplicated-on-event_id request log events."
+        columns:
+          - name: event_id
+            description: "Primary key, one row per logical request event."
+            tests:
+              - unique
+              - not_null
+          - name: event_time
+            description: "UTC timestamp the request was received."
+            tests:
+              - not_null
+          - name: endpoint
+            tests:
+              - not_null
+          - name: status_code
+            tests:
+              - not_null

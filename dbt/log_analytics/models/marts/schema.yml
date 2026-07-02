@@ -1,0 +1,55 @@
+version: 2
+
+models:
+  - name: stg_logs
+    description: "Typed, renamed passthrough of the silver Delta events table."
+    columns:
+      - name: event_id
+        tests:
+          - unique
+          - not_null
+      - name: status_code
+        tests:
+          - not_null
+          - accepted_values:
+              values: [200, 201, 204, 301, 302, 400, 401, 403, 404, 429, 500, 502, 503]
+              config:
+                severity: warn   # new valid codes can appear; warn, don't hard-fail the run
+      - name: method
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']
+      - name: event_ts
+        tests:
+          - not_null
+
+  - name: fct_requests_daily
+    description: "One row per calendar day: traffic volume, error rates, latency percentiles."
+    columns:
+      - name: event_date
+        tests:
+          - unique
+          - not_null
+      - name: request_count
+        tests:
+          - not_null
+      - name: server_error_rate
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+
+  - name: dim_endpoints
+    description: "One row per (endpoint, method): traffic and reliability rollup."
+    columns:
+      - name: endpoint
+        tests:
+          - not_null
+      - name: request_count
+        tests:
+          - not_null
+      - name: traffic_rank
+        tests:
+          - not_null
