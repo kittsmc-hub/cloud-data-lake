@@ -1,0 +1,167 @@
+x-airflow-common: &airflow-common
+  build:
+    context: ./airflow
+  environment:
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
+    AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+    AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+    MINIO_ENDPOINT: http://minio:9000
+    SPARK_MASTER: spark://spark-master:7077
+  volumes:
+    - ./airflow/dags:/opt/airflow/dags
+    - ./spark-jobs:/opt/spark-jobs
+    - ./data-generator:/opt/data-generator
+    - ./dbt:/opt/dbt
+    - ivy_cache:/home/airflow/.ivy2
+    - warehouse_data:/opt/warehouse
+    - airflow_logs:/opt/airflow/logs
+  depends_on:
+    - postgres
+  networks:
+    - datalake
+
+services:
+  minio:
+    image: minio/minio:RELEASE.2024-06-13T22-53-53Z
+    container_name: minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # console
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      # curl was intentionally stripped from the minio/minio image (security
+      # hardening, removed ~Nov 2023) — this healthcheck used to use curl and
+      # would always report unhealthy even though MinIO itself is fine.
+      # `mc` (MinIO's own client) ships in the image and is the maintainers'
+      # recommended healthcheck command instead.
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - datalake
+
+  postgres:
+    image: postgres:15
+    container_name: postgres
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - datalake
+
+  # NOTE: Bitnami retired free/public tags for bitnami/spark on Docker Hub
+  # in 2025 (it's now a paid "Bitnami Secure Images" product) — bitnami/spark:3.5
+  # will 404 on pull. We use the official Apache Spark image instead, which
+  # is the actively-maintained free alternative and needs an explicit
+  # spark-class command rather than a SPARK_MODE env var.
+  spark-master:
+    image: apache/spark:3.5.1
+    container_name: spark-master
+    user: root   # allows writing to mounted volumes; fine for local dev
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
+    environment:
+      SPARK_NO_DAEMONIZE: "true"
+      SPARK_MASTER_HOST: spark-master
+    ports:
+      - "7077:7077"
+      - "8082:8080"   # spark master UI (container 8080 -> host 8082, avoids clashing with Airflow's 8080)
+    volumes:
+      - ./spark-jobs:/opt/spark-jobs
+    networks:
+      - datalake
+
+  spark-worker:
+    image: apache/spark:3.5.1
+    container_name: spark-worker
+    user: root
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+    environment:
+      SPARK_NO_DAEMONIZE: "true"
+      SPARK_WORKER_MEMORY: 2G
+      SPARK_WORKER_CORES: 2
+    ports:
+      - "8083:8081"   # spark worker UI
+    depends_on:
+      - spark-master
+    volumes:
+      - ./spark-jobs:/opt/spark-jobs
+    networks:
+      - datalake
+
+  airflow-init:
+    <<: *airflow-common
+    container_name: airflow-init
+    command:
+      - bash
+      - -c
+      - >
+        airflow db migrate &&
+        airflow users create
+          --username admin --password admin
+          --firstname Data --lastname Engineer
+          --role Admin --email admin@example.com
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: airflow-webserver
+    command: webserver
+    ports:
+      - "8080:8080"
+    depends_on:
+      - airflow-init
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: airflow-scheduler
+    command: scheduler
+    depends_on:
+      - airflow-init
+
+  dashboard:
+    build:
+      context: ./dashboard
+    container_name: dashboard
+    ports:
+      - "8501:8501"
+    environment:
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+      MINIO_ENDPOINT: http://minio:9000
+    volumes:
+      - ./dbt:/opt/dbt
+      - warehouse_data:/opt/warehouse
+    depends_on:
+      - minio
+    networks:
+      - datalake
+
+networks:
+  datalake:
+    driver: bridge
+
+volumes:
+  minio_data:
+  postgres_data:
+  airflow_logs:
+  warehouse_data:
+  ivy_cache:
